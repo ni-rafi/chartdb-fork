@@ -477,4 +477,154 @@ describe('SQLAlchemy Export', () => {
         expect(py).toMatch(/# PK\n\s*id: Mapped\[int\] =/);
         expect(py).toMatch(/# Free-form notes\n\s*body: Mapped\[str\] =/);
     });
+
+    it('pluralizes relationship attribute names correctly (e.g., summary -> summaries)', () => {
+        const a = mkTable({
+            id: 'a',
+            name: 'course',
+            fields: [
+                mkField({
+                    id: 'aid',
+                    name: 'id',
+                    type: { id: 'bigint', name: 'bigint' },
+                    primaryKey: true,
+                    nullable: false,
+                }),
+            ],
+        });
+        const b = mkTable({
+            id: 'b',
+            name: 'summary',
+            fields: [
+                mkField({
+                    id: 'bid',
+                    name: 'id',
+                    type: { id: 'bigint', name: 'bigint' },
+                    primaryKey: true,
+                    nullable: false,
+                }),
+                mkField({
+                    id: 'baid',
+                    name: 'course_id',
+                    type: { id: 'bigint', name: 'bigint' },
+                    nullable: false,
+                }),
+            ],
+        });
+        const rel = mkRel({
+            sourceTableId: 'a',
+            sourceFieldId: 'aid',
+            targetTableId: 'b',
+            targetFieldId: 'baid',
+            sourceCardinality: 'one',
+            targetCardinality: 'many',
+        });
+        const diagram = mkDiagram({ tables: [a, b], relationships: [rel] });
+        const py = exportSQLAlchemy(diagram);
+        // collection attribute on one side should pluralize to summaries
+        expect(py).toMatch(
+            /summaries: Mapped\[list\[Summary\]\] = relationship\("Summary", back_populates="course", lazy="selectin", cascade="all, delete-orphan"\)/
+        );
+        // scalar side remains singular
+        expect(py).toMatch(
+            /course: Mapped\[Course\] = relationship\("Course", back_populates="summaries", lazy="selectin"\)/
+        );
+    });
+
+    it('adds index=True on foreign key columns', () => {
+        const a = mkTable({
+            id: 'a',
+            name: 'authors',
+            fields: [
+                mkField({
+                    id: 'aid',
+                    name: 'author_id',
+                    type: { id: 'bigint', name: 'bigint' },
+                    primaryKey: true,
+                    nullable: false,
+                }),
+            ],
+        });
+        const b = mkTable({
+            id: 'b',
+            name: 'books',
+            fields: [
+                mkField({
+                    id: 'bid',
+                    name: 'book_id',
+                    type: { id: 'bigint', name: 'bigint' },
+                    primaryKey: true,
+                    nullable: false,
+                }),
+                mkField({
+                    id: 'baid',
+                    name: 'author_id',
+                    type: { id: 'bigint', name: 'bigint' },
+                    nullable: false,
+                }),
+            ],
+        });
+        const rel = mkRel({
+            sourceTableId: 'a',
+            sourceFieldId: 'aid',
+            targetTableId: 'b',
+            targetFieldId: 'baid',
+        });
+        const diagram = mkDiagram({ tables: [a, b], relationships: [rel] });
+        const py = exportSQLAlchemy(diagram);
+        // FK column should include index=True (allowing other kwargs in between)
+        expect(py).toMatch(
+            /author_id: Mapped\[int\] = mapped_column\(sa.BigInteger, sa.ForeignKey\("public\.authors\.author_id"\), [^)]*index=True\)/
+        );
+    });
+
+    it('sets default=uuid.uuid4 on UUID columns', () => {
+        const t = mkTable({
+            name: 'uu',
+            fields: [
+                mkField({
+                    name: 'id',
+                    type: { id: 'uuid', name: 'uuid' },
+                    primaryKey: true,
+                    nullable: false,
+                }),
+            ],
+        });
+        const diagram = mkDiagram({ tables: [t] });
+        const py = exportSQLAlchemy(diagram);
+        expect(py).toMatch(
+            /id: Mapped\[str\] = mapped_column\(UUID, [^)]*primary_key=True[^)]*default=uuid\.uuid4|id: Mapped\[str\] = mapped_column\(UUID, [^)]*default=uuid\.uuid4[^)]*primary_key=True/
+        );
+        expect(py).toContain('import uuid');
+    });
+
+    it('adds server_default and onupdate for created_at and updated_at', () => {
+        const t = mkTable({
+            name: 'with_timestamps',
+            fields: [
+                mkField({
+                    name: 'id',
+                    type: { id: 'integer', name: 'integer' },
+                    primaryKey: true,
+                    nullable: false,
+                }),
+                mkField({
+                    name: 'created_at',
+                    type: { id: 'timestamp', name: 'timestamp' },
+                }),
+                mkField({
+                    name: 'updated_at',
+                    type: { id: 'timestamp', name: 'timestamp' },
+                }),
+            ],
+        });
+        const diagram = mkDiagram({ tables: [t] });
+        const py = exportSQLAlchemy(diagram);
+        expect(py).toMatch(
+            /created_at: Mapped\[datetime\.datetime\] = mapped_column\(sa\.DateTime\(timezone=True\), server_default=sa\.func\.now\(\)\)/
+        );
+        expect(py).toMatch(
+            /updated_at: Mapped\[datetime\.datetime\] = mapped_column\(sa\.DateTime\(timezone=True\), server_default=sa\.func\.now\(\), onupdate=sa\.func\.now\(\)\)/
+        );
+    });
 });

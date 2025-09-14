@@ -17,6 +17,15 @@ function pyIdentifier(name: string): string {
     return name.replace(/[^a-zA-Z0-9_]/g, '_');
 }
 
+// Simple pluralization helper to avoid typos like "summarys" -> "summaries"
+function pluralize(name: string): string {
+    const lower = name.toLowerCase();
+    // Common English rules
+    if (/(s|x|z|ch|sh)$/.test(lower)) return `${name}es`;
+    if (/[^aeiou]y$/.test(lower)) return `${name.slice(0, -1)}ies`;
+    return `${name}s`;
+}
+
 function formatPyInlineComment(
     comment?: string | null,
     indent = '    '
@@ -329,6 +338,18 @@ function renderColumn(
         }
     }
 
+    // Heuristic timestamp defaults if field names look standard and no explicit default was set
+    if (!field.default) {
+        const fnameLower = field.name.toLowerCase();
+        if (/(^|_)created_at$/.test(fnameLower)) {
+            kwargs.push('server_default=sa.func.now()');
+        }
+        if (/(^|_)updated_at$/.test(fnameLower)) {
+            kwargs.push('server_default=sa.func.now()');
+            kwargs.push('onupdate=sa.func.now()');
+        }
+    }
+
     // ForeignKey
     if (fkSpec) {
         const schema = fkSpec.refTable.schema
@@ -337,11 +358,17 @@ function renderColumn(
         const target = `${schema}${fkSpec.refTable.name}.${fkSpec.refField.name}`;
         // ensure type is first positional, then ForeignKey
         positionalArgs.push(`sa.ForeignKey("${target}")`);
+        // Helpful index on FK columns for query performance
+        kwargs.push('index=True');
     }
 
     const name = pyIdentifier(field.name);
     let annot = pyTypeFromField(field);
     const tname = field.type.name.toLowerCase();
+    // Python-side default for UUIDs
+    if (tname === 'uuid') {
+        kwargs.push('default=uuid.uuid4');
+    }
     if (tname.endsWith('[]') || tname === 'array') {
         const base = tname.endsWith('[]') ? tname.slice(0, -2) : 'text';
         const elemField: DBField = {
@@ -491,6 +518,7 @@ export function exportSQLAlchemy(diagram: Diagram): string {
     const baseImportLines: string[] = [
         'from __future__ import annotations',
         'import datetime',
+        'import uuid',
         'from decimal import Decimal',
         'from typing import Any',
         'import sqlalchemy as sa',
@@ -520,7 +548,7 @@ export function exportSQLAlchemy(diagram: Diagram): string {
     function relAttrName(tableName: string): string {
         // pluralize crudely for many side, keep singular otherwise - simplistic
         if (tableName.endsWith('s')) return pyIdentifier(tableName);
-        return pyIdentifier(`${tableName}s`);
+        return pyIdentifier(pluralize(tableName));
     }
 
     // Build class code for each table
@@ -552,6 +580,7 @@ export function exportSQLAlchemy(diagram: Diagram): string {
 
             // Relationships on this table
             const relLines: string[] = [];
+            const relLineSet = new Set<string>();
 
             relationships.forEach((rel) => {
                 const cls = classifyRelationship(rel, tables);
@@ -560,30 +589,46 @@ export function exportSQLAlchemy(diagram: Diagram): string {
                         // one side: collection
                         const targetClass = toPascalCase(cls.many.name);
                         const attr = relAttrName(cls.many.name);
-                        relLines.push(
-                            `    ${attr}: Mapped[list[${targetClass}]] = relationship("${targetClass}", back_populates="${pyIdentifier(cls.one.name)}", lazy="selectin", cascade="all, delete-orphan")`
-                        );
+                        {
+                            const line = `    ${attr}: Mapped[list[${targetClass}]] = relationship("${targetClass}", back_populates="${pyIdentifier(cls.one.name)}", lazy="selectin", cascade="all, delete-orphan")`;
+                            if (!relLineSet.has(line)) {
+                                relLines.push(line);
+                                relLineSet.add(line);
+                            }
+                        }
                     } else if (cls.many.id === table.id) {
                         // many side: scalar backref property on many side uses singular of one name
                         const targetClass = toPascalCase(cls.one.name);
                         const attr = pyIdentifier(cls.one.name);
-                        relLines.push(
-                            `    ${attr}: Mapped[${targetClass}] = relationship("${targetClass}", back_populates="${relAttrName(cls.many.name)}", lazy="selectin")`
-                        );
+                        {
+                            const line = `    ${attr}: Mapped[${targetClass}] = relationship("${targetClass}", back_populates="${relAttrName(cls.many.name)}", lazy="selectin")`;
+                            if (!relLineSet.has(line)) {
+                                relLines.push(line);
+                                relLineSet.add(line);
+                            }
+                        }
                     }
                 } else if (cls.kind === 'one_to_one') {
                     if (cls.a.id === table.id) {
                         const targetClass = toPascalCase(cls.b.name);
                         const attr = pyIdentifier(cls.b.name);
-                        relLines.push(
-                            `    ${attr}: Mapped[${targetClass}] = relationship("${targetClass}", uselist=False, back_populates="${pyIdentifier(cls.a.name)}", lazy="selectin")`
-                        );
+                        {
+                            const line = `    ${attr}: Mapped[${targetClass}] = relationship("${targetClass}", uselist=False, back_populates="${pyIdentifier(cls.a.name)}", lazy="selectin")`;
+                            if (!relLineSet.has(line)) {
+                                relLines.push(line);
+                                relLineSet.add(line);
+                            }
+                        }
                     } else if (cls.b.id === table.id) {
                         const targetClass = toPascalCase(cls.a.name);
                         const attr = pyIdentifier(cls.a.name);
-                        relLines.push(
-                            `    ${attr}: Mapped[${targetClass}] = relationship("${targetClass}", uselist=False, back_populates="${pyIdentifier(cls.b.name)}", lazy="selectin")`
-                        );
+                        {
+                            const line = `    ${attr}: Mapped[${targetClass}] = relationship("${targetClass}", uselist=False, back_populates="${pyIdentifier(cls.b.name)}", lazy="selectin")`;
+                            if (!relLineSet.has(line)) {
+                                relLines.push(line);
+                                relLineSet.add(line);
+                            }
+                        }
                     }
                 } else if (cls.kind === 'many_to_many') {
                     if (cls.a.id === table.id) {
@@ -592,18 +637,26 @@ export function exportSQLAlchemy(diagram: Diagram): string {
                             (m) => m.a.id === cls.a.id && m.b.id === cls.b.id
                         );
                         const attr = relAttrName(cls.b.name);
-                        relLines.push(
-                            `    ${attr}: Mapped[list[${targetClass}]] = relationship("${targetClass}", secondary=${assoc?.name}, back_populates="${relAttrName(cls.a.name)}", lazy="selectin")`
-                        );
+                        {
+                            const line = `    ${attr}: Mapped[list[${targetClass}]] = relationship("${targetClass}", secondary=${assoc?.name}, back_populates="${relAttrName(cls.a.name)}", lazy="selectin")`;
+                            if (!relLineSet.has(line)) {
+                                relLines.push(line);
+                                relLineSet.add(line);
+                            }
+                        }
                     } else if (cls.b.id === table.id) {
                         const targetClass = toPascalCase(cls.a.name);
                         const assoc = m2m.find(
                             (m) => m.a.id === cls.a.id && m.b.id === cls.b.id
                         );
                         const attr = relAttrName(cls.a.name);
-                        relLines.push(
-                            `    ${attr}: Mapped[list[${targetClass}]] = relationship("${targetClass}", secondary=${assoc?.name}, back_populates="${relAttrName(cls.b.name)}", lazy="selectin")`
-                        );
+                        {
+                            const line = `    ${attr}: Mapped[list[${targetClass}]] = relationship("${targetClass}", secondary=${assoc?.name}, back_populates="${relAttrName(cls.b.name)}", lazy="selectin")`;
+                            if (!relLineSet.has(line)) {
+                                relLines.push(line);
+                                relLineSet.add(line);
+                            }
+                        }
                     }
                 }
             });
