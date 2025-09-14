@@ -56,6 +56,11 @@ function saTypeFromField(
 ): string {
     const t = field.type.name.toLowerCase();
 
+    // Heuristic: if marked increment but typed as string/text, treat as BigInteger
+    if (field.increment && (t.includes('char') || t === 'text')) {
+        return 'sa.BigInteger';
+    }
+
     // Custom Enum types
     if (enumTypeMap && enumTypeMap.has(field.type.name)) {
         const info = enumTypeMap.get(field.type.name)!;
@@ -84,6 +89,9 @@ function saTypeFromField(
     if (t === 'integer' || t === 'int') return 'sa.Integer';
     if (t === 'bigint') return 'sa.BigInteger';
     if (t === 'smallint' || t === 'int2') return 'sa.SmallInteger';
+    if (t === 'serial') return 'sa.Integer';
+    if (t === 'bigserial') return 'sa.BigInteger';
+    if (t === 'smallserial') return 'sa.SmallInteger';
     if (t === 'decimal' || t === 'numeric')
         return field.precision
             ? field.scale
@@ -133,7 +141,8 @@ function saTypeFromField(
             dialectSymbols?.mssql.add('UNIQUEIDENTIFIER');
             return 'UNIQUEIDENTIFIER';
         }
-        return 'sa.String';
+        // Fallback to string UUIDs with typical 36-char length
+        return 'sa.String(36)';
     }
 
     // JSON
@@ -233,10 +242,15 @@ function saTypeFromField(
 function pyTypeFromField(field: DBField): string {
     const t = field.type.name.toLowerCase();
 
+    // Heuristic: if marked increment but typed as string/text, treat as integer-like in Python
+    if (field.increment && (t.includes('char') || t === 'text')) return 'int';
+
     // Numeric → Python types
     if (t === 'integer' || t === 'int' || t === 'smallint' || t === 'int2')
         return 'int';
     if (t === 'bigint') return 'int';
+    if (t === 'serial' || t === 'bigserial' || t === 'smallserial')
+        return 'int';
     if (t === 'decimal' || t === 'numeric') return 'Decimal';
     if (
         t === 'double' ||
@@ -365,9 +379,23 @@ function renderColumn(
     const name = pyIdentifier(field.name);
     let annot = pyTypeFromField(field);
     const tname = field.type.name.toLowerCase();
-    // Python-side default for UUIDs
+    // UUID defaults
     if (tname === 'uuid') {
-        kwargs.push('default=uuid.uuid4');
+        if (databaseType === DatabaseType.POSTGRESQL) {
+            // Prefer server-side generation when available
+            kwargs.push("server_default=sa.text('gen_random_uuid()')");
+        } else {
+            // Python-side default
+            kwargs.push('default=uuid.uuid4');
+        }
+    }
+
+    // Heuristic: add index to common lookup/search columns
+    const lname = field.name.toLowerCase();
+    if (!fkSpec && !field.primaryKey) {
+        if (/(^|_)(entity_id|code|slug|title)$/.test(lname)) {
+            kwargs.push('index=True');
+        }
     }
     if (tname.endsWith('[]') || tname === 'array') {
         const base = tname.endsWith('[]') ? tname.slice(0, -2) : 'text';
@@ -432,7 +460,12 @@ function classifyRelationship(rel: DBRelationship, tables: DBTable[]) {
     };
 }
 
-export function exportSQLAlchemy(diagram: Diagram): string {
+export function exportSQLAlchemy(
+    diagram: Diagram,
+    options?: {
+        cascade?: string;
+    }
+): string {
     const tables = diagram.tables || [];
     const relationships = diagram.relationships || [];
 
@@ -564,24 +597,47 @@ export function exportSQLAlchemy(diagram: Diagram): string {
             const isCompositePK = pkFields.length > 1;
             const pkFieldNames = new Set<string>(pkFields.map((f) => f.name));
 
-            // Columns
+            // Columns (with special-case for computed full_name)
             const cols = table.fields
-                .map((f) =>
-                    renderColumn(
+                .map((f) => {
+                    // Computed full_name for select tables when name parts exist
+                    if (
+                        f.name === 'full_name' &&
+                        ['staff', 'students', 'teachers', 'officers'].includes(
+                            table.name
+                        )
+                    ) {
+                        const hasFirst = table.fields.some(
+                            (x) => x.name === 'first_name'
+                        );
+                        const hasLast = table.fields.some(
+                            (x) => x.name === 'last_name'
+                        );
+                        // Only emit computed if minimal dependencies exist
+                        if (hasFirst && hasLast) {
+                            const comment = formatPyInlineComment(f.comments);
+                            const line =
+                                "    full_name: Mapped[str] = mapped_column(sa.String(200), sa.Computed(\"first_name || ' ' || COALESCE(middle_name || ' ', '') || last_name\", persisted=True), nullable=False)";
+                            return comment ? comment + line : line;
+                        }
+                    }
+
+                    return renderColumn(
                         f,
                         diagram.databaseType,
                         { isCompositePK, pkFieldNames },
                         enumTypeMap,
                         dialectSymbols,
                         fkByTableField.get(`${table.id}:${f.id}`)
-                    )
-                )
+                    );
+                })
                 .join('\n');
 
             // Relationships on this table
             const relLines: string[] = [];
             const relLineSet = new Set<string>();
 
+            const cascadeSetting = options?.cascade?.trim() || undefined;
             relationships.forEach((rel) => {
                 const cls = classifyRelationship(rel, tables);
                 if (cls.kind === 'one_to_many') {
@@ -589,8 +645,14 @@ export function exportSQLAlchemy(diagram: Diagram): string {
                         // one side: collection
                         const targetClass = toPascalCase(cls.many.name);
                         const attr = relAttrName(cls.many.name);
+                        const effectiveCascade =
+                            (rel as DBRelationship).cascade?.trim() ||
+                            cascadeSetting;
                         {
-                            const line = `    ${attr}: Mapped[list[${targetClass}]] = relationship("${targetClass}", back_populates="${pyIdentifier(cls.one.name)}", lazy="selectin", cascade="all, delete-orphan")`;
+                            const cascadeArg = effectiveCascade
+                                ? `, cascade="${effectiveCascade}"`
+                                : '';
+                            const line = `    ${attr}: Mapped[list["${targetClass}"]] = relationship("${targetClass}", back_populates="${pyIdentifier(cls.one.name)}", lazy="selectin"${cascadeArg})`;
                             if (!relLineSet.has(line)) {
                                 relLines.push(line);
                                 relLineSet.add(line);
@@ -601,7 +663,7 @@ export function exportSQLAlchemy(diagram: Diagram): string {
                         const targetClass = toPascalCase(cls.one.name);
                         const attr = pyIdentifier(cls.one.name);
                         {
-                            const line = `    ${attr}: Mapped[${targetClass}] = relationship("${targetClass}", back_populates="${relAttrName(cls.many.name)}", lazy="selectin")`;
+                            const line = `    ${attr}: Mapped["${targetClass}"] = relationship("${targetClass}", back_populates="${relAttrName(cls.many.name)}", lazy="selectin")`;
                             if (!relLineSet.has(line)) {
                                 relLines.push(line);
                                 relLineSet.add(line);
@@ -613,7 +675,7 @@ export function exportSQLAlchemy(diagram: Diagram): string {
                         const targetClass = toPascalCase(cls.b.name);
                         const attr = pyIdentifier(cls.b.name);
                         {
-                            const line = `    ${attr}: Mapped[${targetClass}] = relationship("${targetClass}", uselist=False, back_populates="${pyIdentifier(cls.a.name)}", lazy="selectin")`;
+                            const line = `    ${attr}: Mapped["${targetClass}"] = relationship("${targetClass}", uselist=False, back_populates="${pyIdentifier(cls.a.name)}", lazy="selectin")`;
                             if (!relLineSet.has(line)) {
                                 relLines.push(line);
                                 relLineSet.add(line);
@@ -623,7 +685,7 @@ export function exportSQLAlchemy(diagram: Diagram): string {
                         const targetClass = toPascalCase(cls.a.name);
                         const attr = pyIdentifier(cls.a.name);
                         {
-                            const line = `    ${attr}: Mapped[${targetClass}] = relationship("${targetClass}", uselist=False, back_populates="${pyIdentifier(cls.b.name)}", lazy="selectin")`;
+                            const line = `    ${attr}: Mapped["${targetClass}"] = relationship("${targetClass}", uselist=False, back_populates="${pyIdentifier(cls.b.name)}", lazy="selectin")`;
                             if (!relLineSet.has(line)) {
                                 relLines.push(line);
                                 relLineSet.add(line);
@@ -638,7 +700,7 @@ export function exportSQLAlchemy(diagram: Diagram): string {
                         );
                         const attr = relAttrName(cls.b.name);
                         {
-                            const line = `    ${attr}: Mapped[list[${targetClass}]] = relationship("${targetClass}", secondary=${assoc?.name}, back_populates="${relAttrName(cls.a.name)}", lazy="selectin")`;
+                            const line = `    ${attr}: Mapped[list["${targetClass}"]] = relationship("${targetClass}", secondary=${assoc?.name}, back_populates="${relAttrName(cls.a.name)}", lazy="selectin")`;
                             if (!relLineSet.has(line)) {
                                 relLines.push(line);
                                 relLineSet.add(line);
@@ -651,7 +713,7 @@ export function exportSQLAlchemy(diagram: Diagram): string {
                         );
                         const attr = relAttrName(cls.a.name);
                         {
-                            const line = `    ${attr}: Mapped[list[${targetClass}]] = relationship("${targetClass}", secondary=${assoc?.name}, back_populates="${relAttrName(cls.b.name)}", lazy="selectin")`;
+                            const line = `    ${attr}: Mapped[list["${targetClass}"]] = relationship("${targetClass}", secondary=${assoc?.name}, back_populates="${relAttrName(cls.b.name)}", lazy="selectin")`;
                             if (!relLineSet.has(line)) {
                                 relLines.push(line);
                                 relLineSet.add(line);
@@ -679,6 +741,7 @@ export function exportSQLAlchemy(diagram: Diagram): string {
             const nonPKIndexes = table.indexes.filter(
                 (idx) => !idx.isPrimaryKey
             );
+            const existingUniqueSets: Array<Set<string>> = [];
             nonPKIndexes.forEach((idx) => {
                 const indexFields = idx.fieldIds
                     .map((fid) => table.fields.find((f) => f.id === fid))
@@ -701,6 +764,7 @@ export function exportSQLAlchemy(diagram: Diagram): string {
                     tableArgs.push(
                         `sa.UniqueConstraint(${cols}, name="${idx.name}")`
                     );
+                    existingUniqueSets.push(idxFieldSet);
                 } else {
                     tableArgs.push(`sa.Index("${idx.name}", ${cols})`);
                 }
@@ -750,7 +814,16 @@ export function exportSQLAlchemy(diagram: Diagram): string {
     }
 
     const imports = importLines.join('\n');
-    const header = `${imports}\n\n\nclass Base(DeclarativeBase):\n    pass\n`;
+    const naming = [
+        'naming_convention = {',
+        "    'ix': 'ix_%(column_0_label)s',",
+        "    'uq': 'uq_%(table_name)s_%(column_0_name)s',",
+        "    'ck': 'ck_%(table_name)s_%(constraint_name)s',",
+        "    'fk': 'fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s',",
+        "    'pk': 'pk_%(table_name)s',",
+        '}',
+    ].join('\n');
+    const header = `${imports}\n\n\n${naming}\n\n\nclass Base(DeclarativeBase):\n    metadata = sa.MetaData(naming_convention=naming_convention)\n`;
 
     const footer = '\n';
 

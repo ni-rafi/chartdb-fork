@@ -98,7 +98,7 @@ describe('SQLAlchemy Export', () => {
             tables: [t],
             databaseType: DatabaseType.POSTGRESQL,
         });
-        const py = exportSQLAlchemy(diagram);
+        const py = exportSQLAlchemy(diagram, { cascade: 'all, delete-orphan' });
         expect(py).toContain('__tablename__ = "courses"');
         expect(py).toContain('__table_args__ = ({"schema": "public"},)');
         expect(py).toContain('__doc__ = """Course catalog"""');
@@ -151,18 +151,18 @@ describe('SQLAlchemy Export', () => {
             relationships: [rel],
             databaseType: DatabaseType.POSTGRESQL,
         });
-        const py = exportSQLAlchemy(diagram);
+        const py = exportSQLAlchemy(diagram, { cascade: 'all, delete-orphan' });
 
         // FK includes schema-qualified ref
         expect(py).toContain('sa.ForeignKey("public.authors.author_id")');
 
         // Relationships (collection)
         expect(py).toMatch(
-            /books: Mapped\[list\[Books\]\] = relationship\("Books", back_populates="authors", lazy="selectin", cascade="all, delete-orphan"\)/
+            /books: Mapped\[list\[(?:"?Books"?)\]\] = relationship\("Books", back_populates="authors", lazy="selectin", cascade="all, delete-orphan"\)/
         );
         // Relationships (scalar)
         expect(py).toMatch(
-            /authors: Mapped\[Authors\] = relationship\("Authors", back_populates="books", lazy="selectin"\)/
+            /authors: Mapped\[(?:"?Authors"?)\] = relationship\("Authors", back_populates="books", lazy="selectin"\)/
         );
     });
 
@@ -520,14 +520,14 @@ describe('SQLAlchemy Export', () => {
             targetCardinality: 'many',
         });
         const diagram = mkDiagram({ tables: [a, b], relationships: [rel] });
-        const py = exportSQLAlchemy(diagram);
+        const py = exportSQLAlchemy(diagram, { cascade: 'all, delete-orphan' });
         // collection attribute on one side should pluralize to summaries
         expect(py).toMatch(
-            /summaries: Mapped\[list\[Summary\]\] = relationship\("Summary", back_populates="course", lazy="selectin", cascade="all, delete-orphan"\)/
+            /summaries: Mapped\[list\[(?:"?Summary"?)\]\] = relationship\("Summary", back_populates="course", lazy="selectin", cascade="all, delete-orphan"\)/
         );
         // scalar side remains singular
         expect(py).toMatch(
-            /course: Mapped\[Course\] = relationship\("Course", back_populates="summaries", lazy="selectin"\)/
+            /course: Mapped\[(?:"?Course"?)\] = relationship\("Course", back_populates="summaries", lazy="selectin"\)/
         );
     });
 
@@ -592,8 +592,9 @@ describe('SQLAlchemy Export', () => {
         });
         const diagram = mkDiagram({ tables: [t] });
         const py = exportSQLAlchemy(diagram);
+        // Accept either server-side UUID (Postgres) or Python-side default
         expect(py).toMatch(
-            /id: Mapped\[str\] = mapped_column\(UUID, [^)]*primary_key=True[^)]*default=uuid\.uuid4|id: Mapped\[str\] = mapped_column\(UUID, [^)]*default=uuid\.uuid4[^)]*primary_key=True/
+            /id: Mapped\[str\] = mapped_column\(UUID, [^)]*primary_key=True[^)]*(server_default=sa\.text\('gen_random_uuid\(\)'\)|default=uuid\.uuid4)|id: Mapped\[str\] = mapped_column\(UUID, [^)]*(server_default=sa\.text\('gen_random_uuid\(\)'\)|default=uuid\.uuid4)[^)]*primary_key=True/
         );
         expect(py).toContain('import uuid');
     });

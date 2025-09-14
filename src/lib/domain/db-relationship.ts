@@ -11,6 +11,7 @@ export interface DBRelationship {
     targetFieldId: string;
     sourceCardinality: Cardinality;
     targetCardinality: Cardinality;
+    cascade?: string | null;
     createdAt: number;
 }
 
@@ -25,6 +26,7 @@ export const dbRelationshipSchema: z.ZodType<DBRelationship> = z.object({
     targetFieldId: z.string(),
     sourceCardinality: z.union([z.literal('one'), z.literal('many')]),
     targetCardinality: z.union([z.literal('one'), z.literal('many')]),
+    cascade: z.string().or(z.null()).optional(),
     createdAt: z.number(),
 });
 
