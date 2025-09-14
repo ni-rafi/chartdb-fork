@@ -47,6 +47,7 @@ export const Menu: React.FC<MenuProps> = () => {
         openExportDiagramDialog,
         openImportDiagramDialog,
         openImportDBMLDialog,
+        openExportSQLAlchemyDialog,
     } = useDialog();
     const { showAlert } = useAlert();
     const { setTheme, theme } = useTheme();
@@ -340,6 +341,9 @@ export const Menu: React.FC<MenuProps> = () => {
                             <MenubarSeparator />
                             <MenubarItem onClick={openExportDiagramDialog}>
                                 JSON
+                            </MenubarItem>
+                            <MenubarItem onClick={openExportSQLAlchemyDialog}>
+                                SQLAlchemy (Python)
                             </MenubarItem>
                         </MenubarSubContent>
                     </MenubarSub>

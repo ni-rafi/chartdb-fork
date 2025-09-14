@@ -22,6 +22,7 @@ import { ExportDiagramDialog } from '@/dialogs/export-diagram-dialog/export-diag
 import { ImportDiagramDialog } from '@/dialogs/import-diagram-dialog/import-diagram-dialog';
 import type { ImportDBMLDialogProps } from '@/dialogs/import-dbml-dialog/import-dbml-dialog';
 import { ImportDBMLDialog } from '@/dialogs/import-dbml-dialog/import-dbml-dialog';
+import { ExportSQLAlchemyDialog } from '@/dialogs/export-sqlalchemy-dialog/export-sqlalchemy-dialog';
 
 export const DialogProvider: React.FC<React.PropsWithChildren> = ({
     children,
@@ -137,6 +138,10 @@ export const DialogProvider: React.FC<React.PropsWithChildren> = ({
     const [importDBMLDialogParams, setImportDBMLDialogParams] =
         useState<Omit<ImportDBMLDialogProps, 'dialog'>>();
 
+    // Export SQLAlchemy dialog
+    const [openExportSQLAlchemyDialog, setOpenExportSQLAlchemyDialog] =
+        useState(false);
+
     return (
         <dialogContext.Provider
             value={{
@@ -170,6 +175,10 @@ export const DialogProvider: React.FC<React.PropsWithChildren> = ({
                     setOpenImportDBMLDialog(true);
                 },
                 closeImportDBMLDialog: () => setOpenImportDBMLDialog(false),
+                openExportSQLAlchemyDialog: () =>
+                    setOpenExportSQLAlchemyDialog(true),
+                closeExportSQLAlchemyDialog: () =>
+                    setOpenExportSQLAlchemyDialog(false),
             }}
         >
             {children}
@@ -207,6 +216,9 @@ export const DialogProvider: React.FC<React.PropsWithChildren> = ({
             <ImportDBMLDialog
                 dialog={{ open: openImportDBMLDialog }}
                 {...importDBMLDialogParams}
+            />
+            <ExportSQLAlchemyDialog
+                dialog={{ open: openExportSQLAlchemyDialog }}
             />
         </dialogContext.Provider>
     );

@@ -10,6 +10,7 @@ import type { CreateRelationshipDialogProps } from '@/dialogs/create-relationshi
 import type { ImportDBMLDialogProps } from '@/dialogs/import-dbml-dialog/import-dbml-dialog';
 import type { OpenDiagramDialogProps } from '@/dialogs/open-diagram-dialog/open-diagram-dialog';
 import type { CreateDiagramDialogProps } from '@/dialogs/create-diagram-dialog/create-diagram-dialog';
+import type { ExportSQLAlchemyDialogProps } from '@/dialogs/export-sqlalchemy-dialog/export-sqlalchemy-dialog';
 
 export interface DialogContext {
     // Create diagram dialog
@@ -62,6 +63,12 @@ export interface DialogContext {
     ) => void;
     closeExportDiagramDialog: () => void;
 
+    // Export SQLAlchemy dialog
+    openExportSQLAlchemyDialog: (
+        params?: Omit<ExportSQLAlchemyDialogProps, 'dialog'>
+    ) => void;
+    closeExportSQLAlchemyDialog: () => void;
+
     // Import diagram dialog
     openImportDiagramDialog: (
         params: Omit<ImportDiagramDialogProps, 'dialog'>
@@ -94,6 +101,8 @@ export const dialogContext = createContext<DialogContext>({
     closeExportImageDialog: emptyFn,
     openExportDiagramDialog: emptyFn,
     closeExportDiagramDialog: emptyFn,
+    openExportSQLAlchemyDialog: emptyFn,
+    closeExportSQLAlchemyDialog: emptyFn,
     openImportDiagramDialog: emptyFn,
     closeImportDiagramDialog: emptyFn,
     openImportDBMLDialog: emptyFn,
