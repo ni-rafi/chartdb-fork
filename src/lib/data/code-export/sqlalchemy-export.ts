@@ -12,6 +12,21 @@ function toPascalCase(name: string): string {
         .replace(/^(.)/, (m) => m.toUpperCase());
 }
 
+function makeUniqueConstraintName(
+    tableName: string,
+    fields: DBField[],
+    provided?: string | null
+): string {
+    const safeTable = pyIdentifier(tableName);
+    if (provided && provided.trim()) {
+        const n = provided.trim();
+        if (n.startsWith('idx_')) return 'uq_' + n.slice(4);
+        return n;
+    }
+    const parts = fields.map((f) => pyIdentifier(f.name));
+    return `uq_${safeTable}_${parts.join('_')}`;
+}
+
 function pyIdentifier(name: string): string {
     // Basic sanitization: replace invalid chars with underscore
     return name.replace(/[^a-zA-Z0-9_]/g, '_');
@@ -24,6 +39,14 @@ function pluralize(name: string): string {
     if (/(s|x|z|ch|sh)$/.test(lower)) return `${name}es`;
     if (/[^aeiou]y$/.test(lower)) return `${name.slice(0, -1)}ies`;
     return `${name}s`;
+}
+
+function singularize(name: string): string {
+    const lower = name.toLowerCase();
+    if (/(.+)ies$/.test(lower)) return name.replace(/ies$/i, 'y');
+    if (/(.+)s$/.test(lower) && !/(ss|us)$/.test(lower))
+        return name.replace(/s$/i, '');
+    return name;
 }
 
 function formatPyInlineComment(
@@ -58,7 +81,7 @@ function saTypeFromField(
 
     // Heuristic: if marked increment but typed as string/text, treat as BigInteger
     if (field.increment && (t.includes('char') || t === 'text')) {
-        return 'sa.BigInteger';
+        return 'BigInteger';
     }
 
     // Custom Enum types
@@ -66,7 +89,7 @@ function saTypeFromField(
         const info = enumTypeMap.get(field.type.name)!;
         const vals = info.values.map((v) => JSON.stringify(v)).join(', ');
         const schemaArg = info.schema ? `, schema="${info.schema}"` : '';
-        return `sa.Enum(${vals}, name="${field.type.name}"${schemaArg})`;
+        return `Enum(${vals}, name="${field.type.name}"${schemaArg})`;
     }
 
     // Helper: ARRAY element inference like "varchar[]", "integer[]", "uuid[]"
@@ -82,54 +105,54 @@ function saTypeFromField(
             enumTypeMap,
             dialectSymbols
         );
-        return `sa.ARRAY(${elemType})`;
+        return `ARRAY(${elemType})`;
     }
 
     // Numeric
-    if (t === 'integer' || t === 'int') return 'sa.Integer';
-    if (t === 'bigint') return 'sa.BigInteger';
-    if (t === 'smallint' || t === 'int2') return 'sa.SmallInteger';
-    if (t === 'serial') return 'sa.Integer';
-    if (t === 'bigserial') return 'sa.BigInteger';
-    if (t === 'smallserial') return 'sa.SmallInteger';
+    if (t === 'integer' || t === 'int') return 'Integer';
+    if (t === 'bigint') return 'BigInteger';
+    if (t === 'smallint' || t === 'int2') return 'SmallInteger';
+    if (t === 'serial') return 'Integer';
+    if (t === 'bigserial') return 'BigInteger';
+    if (t === 'smallserial') return 'SmallInteger';
     if (t === 'decimal' || t === 'numeric')
         return field.precision
             ? field.scale
-                ? `sa.Numeric(precision=${field.precision}, scale=${field.scale})`
-                : `sa.Numeric(precision=${field.precision})`
-            : 'sa.Numeric';
+                ? `Numeric(precision=${field.precision}, scale=${field.scale})`
+                : `Numeric(precision=${field.precision})`
+            : 'Numeric';
     if (t === 'double' || t === 'double precision' || t === 'float8')
-        return 'sa.Float';
-    if (t === 'real' || t === 'float' || t === 'float4') return 'sa.Float';
+        return 'Float';
+    if (t === 'real' || t === 'float' || t === 'float4') return 'Float';
 
     // Strings / text
     if (t.includes('varchar') || t === 'character varying') {
         const size = field.characterMaximumLength
             ? parseInt(field.characterMaximumLength)
             : undefined;
-        return size && size > 0 ? `sa.String(${size})` : 'sa.String';
+        return size && size > 0 ? `String(${size})` : 'String';
     }
     if (t === 'char' || t === 'character') {
         const size = field.characterMaximumLength
             ? parseInt(field.characterMaximumLength)
             : undefined;
-        return size && size > 0 ? `sa.String(${size})` : 'sa.String';
+        return size && size > 0 ? `String(${size})` : 'String';
     }
-    if (t === 'text') return 'sa.Text';
+    if (t === 'text') return 'Text';
 
     // Date/Time
-    if (t === 'date') return 'sa.Date';
-    if (t.includes('timestamp')) return 'sa.DateTime(timezone=True)';
-    if (t === 'time') return 'sa.Time';
+    if (t === 'date') return 'Date';
+    if (t.includes('timestamp')) return 'DateTime(timezone=True)';
+    if (t === 'time') return 'Time';
 
     // Boolean
-    if (t === 'boolean' || t === 'bool') return 'sa.Boolean';
+    if (t === 'boolean' || t === 'bool') return 'Boolean';
     if (databaseType === DatabaseType.MYSQL && t.startsWith('tinyint'))
-        return 'sa.Boolean';
+        return 'Boolean';
 
     // Binary
     if (t === 'bytea' || t === 'blob' || t === 'binary' || t === 'varbinary')
-        return 'sa.LargeBinary';
+        return 'LargeBinary';
 
     // UUID
     if (t === 'uuid') {
@@ -142,7 +165,7 @@ function saTypeFromField(
             return 'UNIQUEIDENTIFIER';
         }
         // Fallback to string UUIDs with typical 36-char length
-        return 'sa.String(36)';
+        return 'String(36)';
     }
 
     // JSON
@@ -155,11 +178,11 @@ function saTypeFromField(
             dialectSymbols?.mysql.add('JSON');
             return 'JSON';
         }
-        return 'sa.JSON';
+        return 'JSON';
     }
 
     // Arrays (fallback)
-    if (t === 'array') return 'sa.ARRAY(sa.Text)';
+    if (t === 'array') return 'ARRAY(Text)';
 
     // PostgreSQL-specific
     if (databaseType === DatabaseType.POSTGRESQL) {
@@ -188,7 +211,7 @@ function saTypeFromField(
             return 'MONEY';
         }
         if (t === 'interval') {
-            return 'sa.Interval';
+            return 'Interval';
         }
     }
 
@@ -231,12 +254,12 @@ function saTypeFromField(
             const size = field.characterMaximumLength
                 ? parseInt(field.characterMaximumLength)
                 : undefined;
-            return size && size > 0 ? `sa.Unicode(${size})` : 'sa.UnicodeText';
+            return size && size > 0 ? `Unicode(${size})` : 'UnicodeText';
         }
     }
 
     // Fallback
-    return 'sa.String';
+    return 'String';
 }
 
 function pyTypeFromField(field: DBField): string {
@@ -273,11 +296,11 @@ function pyTypeFromField(field: DBField): string {
         return 'str';
 
     // Date/Time
-    if (t === 'date') return 'datetime.date';
-    if (t.includes('timestamp')) return 'datetime.datetime';
+    if (t === 'date') return 'date';
+    if (t.includes('timestamp')) return 'datetime';
     if (t === 'datetime2' || t === 'smalldatetime' || t === 'datetime')
-        return 'datetime.datetime';
-    if (t === 'time') return 'datetime.time';
+        return 'datetime';
+    if (t === 'time') return 'time';
 
     // Boolean
     if (t === 'boolean' || t === 'bool') return 'bool';
@@ -336,19 +359,19 @@ function renderColumn(
     if (field.default && !field.increment) {
         const d = field.default.trim();
         if (/^now\(\)$/i.test(d) || /current_timestamp/i.test(d)) {
-            kwargs.push('server_default=sa.text("CURRENT_TIMESTAMP")');
+            kwargs.push('server_default=text("CURRENT_TIMESTAMP")');
         } else if (/^nextval\(/i.test(d)) {
-            // leave it to DB side; optional: server_default=sa.text("nextval('seq')")
-            kwargs.push(`server_default=sa.text("${d.replace(/"/g, '\\"')}")`);
+            // leave it to DB side; optional: server_default=text("nextval('seq')")
+            kwargs.push(`server_default=text("${d.replace(/"/g, '\\"')}")`);
         } else if (/^\d+(\.\d+)?$/.test(d)) {
-            kwargs.push(`server_default=sa.text("${d}")`);
+            kwargs.push(`server_default=text("${d}")`);
         } else if (/^'.*'$/.test(d) || /^".*"$/.test(d)) {
             // strip quotes and use literal string
             const lit = d.replace(/^['"]|['"]$/g, '').replace(/"/g, '\\"');
-            kwargs.push(`server_default=sa.text("'${lit}'")`);
+            kwargs.push(`server_default=text("'${lit}'")`);
         } else {
             const lit = d.replace(/"/g, '\\"');
-            kwargs.push(`server_default=sa.text("${lit}")`);
+            kwargs.push(`server_default=text("${lit}")`);
         }
     }
 
@@ -356,11 +379,14 @@ function renderColumn(
     if (!field.default) {
         const fnameLower = field.name.toLowerCase();
         if (/(^|_)created_at$/.test(fnameLower)) {
-            kwargs.push('server_default=sa.func.now()');
+            kwargs.push('server_default=func.now()');
         }
         if (/(^|_)updated_at$/.test(fnameLower)) {
-            kwargs.push('server_default=sa.func.now()');
-            kwargs.push('onupdate=sa.func.now()');
+            kwargs.push('server_default=func.now()');
+            kwargs.push('onupdate=func.now()');
+        }
+        if (/(^|_)computed_at$/.test(fnameLower)) {
+            kwargs.push('server_default=func.now()');
         }
     }
 
@@ -371,7 +397,7 @@ function renderColumn(
             : '';
         const target = `${schema}${fkSpec.refTable.name}.${fkSpec.refField.name}`;
         // ensure type is first positional, then ForeignKey
-        positionalArgs.push(`sa.ForeignKey("${target}")`);
+        positionalArgs.push(`ForeignKey("${target}")`);
         // Helpful index on FK columns for query performance
         kwargs.push('index=True');
     }
@@ -383,7 +409,7 @@ function renderColumn(
     if (tname === 'uuid') {
         if (databaseType === DatabaseType.POSTGRESQL) {
             // Prefer server-side generation when available
-            kwargs.push("server_default=sa.text('gen_random_uuid()')");
+            kwargs.push("server_default=text('gen_random_uuid()')");
         } else {
             // Python-side default
             kwargs.push('default=uuid.uuid4');
@@ -550,12 +576,10 @@ export function exportSQLAlchemy(
     // We'll build importLines after scanning tables/columns to know dialect symbols
     const baseImportLines: string[] = [
         'from __future__ import annotations',
-        'import datetime',
+        'from datetime import date, datetime, time',
         'import uuid',
         'from decimal import Decimal',
         'from typing import Any',
-        'import sqlalchemy as sa',
-        'from sqlalchemy import Table',
         'from sqlalchemy.orm import DeclarativeBase, relationship, Mapped, mapped_column',
     ];
 
@@ -570,8 +594,8 @@ export function exportSQLAlchemy(
             const bFull = `${j.b.schema ? j.b.schema + '.' : ''}${j.b.name}.${j.bField.name}`;
             return (
                 `${j.name} = Table("${j.name}", Base.metadata${schemaArg},\n` +
-                `    sa.Column("${pyIdentifier(j.aField.name)}", sa.ForeignKey("${aFull}"), primary_key=True),\n` +
-                `    sa.Column("${pyIdentifier(j.bField.name)}", sa.ForeignKey("${bFull}"), primary_key=True),\n` +
+                `    Column("${pyIdentifier(j.aField.name)}", ForeignKey("${aFull}"), primary_key=True),\n` +
+                `    Column("${pyIdentifier(j.bField.name)}", ForeignKey("${bFull}"), primary_key=True),\n` +
                 `)\n`
             );
         })
@@ -584,9 +608,31 @@ export function exportSQLAlchemy(
         return pyIdentifier(pluralize(tableName));
     }
 
-    // Build class code for each table
+    // Ensure relationship attribute doesn't collide with a column name on the class
+    function safeRelAttrName(desired: string, table: DBTable): string {
+        const fieldNames = new Set(
+            table.fields.map((f) => pyIdentifier(f.name))
+        );
+        if (!fieldNames.has(desired)) return desired;
+        // try with _rel, then numeric suffixes
+        const candidate = `${desired}_rel`;
+        if (!fieldNames.has(candidate)) return candidate;
+        let i = 2;
+        while (fieldNames.has(`${candidate}_${i}`)) i++;
+        return `${candidate}_${i}`;
+    }
+
+    // Build class code for each table, organized by schema then table name
     const classBlocks = tables
         .filter((t) => !t.isView)
+        .sort((a, b) => {
+            const schemaA =
+                a.schema || defaultSchemas[diagram.databaseType] || '';
+            const schemaB =
+                b.schema || defaultSchemas[diagram.databaseType] || '';
+            if (schemaA !== schemaB) return schemaA.localeCompare(schemaB);
+            return a.name.localeCompare(b.name);
+        })
         .map((table) => {
             const className = toPascalCase(table.name);
             const schemaName =
@@ -617,7 +663,7 @@ export function exportSQLAlchemy(
                         if (hasFirst && hasLast) {
                             const comment = formatPyInlineComment(f.comments);
                             const line =
-                                "    full_name: Mapped[str] = mapped_column(sa.String(200), sa.Computed(\"first_name || ' ' || COALESCE(middle_name || ' ', '') || last_name\", persisted=True), nullable=False)";
+                                "    full_name: Mapped[str] = mapped_column(String(200), Computed(\"first_name || ' ' || COALESCE(middle_name || ' ', '') || last_name\", persisted=True), nullable=False)";
                             return comment ? comment + line : line;
                         }
                     }
@@ -645,6 +691,14 @@ export function exportSQLAlchemy(
                         // one side: collection
                         const targetClass = toPascalCase(cls.many.name);
                         const attr = relAttrName(cls.many.name);
+                        // Opposite side attribute on many side may be adjusted for safety
+                        const manySideDesired = pyIdentifier(
+                            singularize(cls.one.name)
+                        );
+                        const manySideAttr = safeRelAttrName(
+                            manySideDesired,
+                            cls.many
+                        );
                         const effectiveCascade =
                             (rel as DBRelationship).cascade?.trim() ||
                             cascadeSetting;
@@ -652,7 +706,7 @@ export function exportSQLAlchemy(
                             const cascadeArg = effectiveCascade
                                 ? `, cascade="${effectiveCascade}"`
                                 : '';
-                            const line = `    ${attr}: Mapped[list["${targetClass}"]] = relationship("${targetClass}", back_populates="${pyIdentifier(cls.one.name)}", lazy="selectin"${cascadeArg})`;
+                            const line = `    ${attr}: Mapped[list["${targetClass}"]] = relationship("${targetClass}", back_populates="${manySideAttr}", lazy="selectin"${cascadeArg})`;
                             if (!relLineSet.has(line)) {
                                 relLines.push(line);
                                 relLineSet.add(line);
@@ -661,7 +715,8 @@ export function exportSQLAlchemy(
                     } else if (cls.many.id === table.id) {
                         // many side: scalar backref property on many side uses singular of one name
                         const targetClass = toPascalCase(cls.one.name);
-                        const attr = pyIdentifier(cls.one.name);
+                        const desired = pyIdentifier(singularize(cls.one.name));
+                        const attr = safeRelAttrName(desired, table);
                         {
                             const line = `    ${attr}: Mapped["${targetClass}"] = relationship("${targetClass}", back_populates="${relAttrName(cls.many.name)}", lazy="selectin")`;
                             if (!relLineSet.has(line)) {
@@ -673,9 +728,15 @@ export function exportSQLAlchemy(
                 } else if (cls.kind === 'one_to_one') {
                     if (cls.a.id === table.id) {
                         const targetClass = toPascalCase(cls.b.name);
-                        const attr = pyIdentifier(cls.b.name);
+                        const desired = pyIdentifier(singularize(cls.b.name));
+                        const attr = safeRelAttrName(desired, table);
+                        // Opposite side attribute (on B) may be adjusted
+                        const otherDesired = pyIdentifier(
+                            singularize(cls.a.name)
+                        );
+                        const otherAttr = safeRelAttrName(otherDesired, cls.b);
                         {
-                            const line = `    ${attr}: Mapped["${targetClass}"] = relationship("${targetClass}", uselist=False, back_populates="${pyIdentifier(cls.a.name)}", lazy="selectin")`;
+                            const line = `    ${attr}: Mapped["${targetClass}"] = relationship("${targetClass}", uselist=False, back_populates="${otherAttr}", lazy="selectin")`;
                             if (!relLineSet.has(line)) {
                                 relLines.push(line);
                                 relLineSet.add(line);
@@ -683,9 +744,15 @@ export function exportSQLAlchemy(
                         }
                     } else if (cls.b.id === table.id) {
                         const targetClass = toPascalCase(cls.a.name);
-                        const attr = pyIdentifier(cls.a.name);
+                        const desired = pyIdentifier(singularize(cls.a.name));
+                        const attr = safeRelAttrName(desired, table);
+                        // Opposite side attribute (on A) may be adjusted
+                        const otherDesired = pyIdentifier(
+                            singularize(cls.b.name)
+                        );
+                        const otherAttr = safeRelAttrName(otherDesired, cls.a);
                         {
-                            const line = `    ${attr}: Mapped["${targetClass}"] = relationship("${targetClass}", uselist=False, back_populates="${pyIdentifier(cls.b.name)}", lazy="selectin")`;
+                            const line = `    ${attr}: Mapped["${targetClass}"] = relationship("${targetClass}", uselist=False, back_populates="${otherAttr}", lazy="selectin")`;
                             if (!relLineSet.has(line)) {
                                 relLines.push(line);
                                 relLineSet.add(line);
@@ -735,7 +802,7 @@ export function exportSQLAlchemy(
             // Composite PK
             if (isCompositePK) {
                 const cols = pkFields.map((f) => `"${f.name}"`).join(', ');
-                tableArgs.push(`sa.PrimaryKeyConstraint(${cols})`);
+                tableArgs.push(`PrimaryKeyConstraint(${cols})`);
             }
             // Unique / Indexes
             const nonPKIndexes = table.indexes.filter(
@@ -761,21 +828,47 @@ export function exportSQLAlchemy(
                     if (indexFields.length === 1 && indexFields[0].unique) {
                         return;
                     }
+                    const uqName = makeUniqueConstraintName(
+                        table.name,
+                        indexFields,
+                        idx.name
+                    );
                     tableArgs.push(
-                        `sa.UniqueConstraint(${cols}, name="${idx.name}")`
+                        `UniqueConstraint(${cols}, name="${uqName}")`
                     );
                     existingUniqueSets.push(idxFieldSet);
                 } else {
-                    tableArgs.push(`sa.Index("${idx.name}", ${cols})`);
+                    // Avoid duplicating single-column indexes that are already emitted via column index=True
+                    if (indexFields.length === 1) {
+                        return;
+                    }
+                    // Let naming_convention derive the index name; ensure columns are treated as columns, not the name
+                    tableArgs.push(`Index(None, ${cols})`);
                 }
             });
 
-            if (schemaName) {
-                tableArgs.push(`{"schema": "${schemaName}"}`);
+            const hasSchema = Boolean(schemaName);
+            const hasComment = Boolean(table.comments && table.comments.trim());
+            if (hasSchema || hasComment) {
+                const parts: string[] = [];
+                if (hasSchema) {
+                    parts.push(`"schema": "${schemaName}"`);
+                }
+                if (hasComment) {
+                    const tableComment = table
+                        .comments!.replace(/\r?\n/g, ' ')
+                        .replace(/"/g, '\\"');
+                    parts.push(`"comment": "${tableComment}"`);
+                }
+                tableArgs.push(`{${parts.join(', ')}}`);
             }
 
             const tableArgsLine = tableArgs.length
-                ? `    __table_args__ = (${tableArgs.join(', ')},)`
+                ? [
+                      '    __table_args__ = (',
+                      ...tableArgs.map((a) => `        ${a},`),
+                      '    )',
+                  ].join('\n')
                 : undefined;
 
             return [
@@ -790,10 +883,82 @@ export function exportSQLAlchemy(
                 .filter(Boolean)
                 .join('\n');
         })
-        .join('\n\n');
+        .filter(Boolean)
+        .join('\n\n\n')
+        .trim();
+
+    // Build minimal sqlalchemy core imports after scanning generated code
+    const usedCore = new Set<string>();
+    // Always need MetaData for Base.metadata
+    usedCore.add('MetaData');
+    // Assoc tables imply Table/Column/ForeignKey
+    if (assocBlocks && assocBlocks.trim().length) {
+        usedCore.add('Table');
+        usedCore.add('Column');
+        usedCore.add('ForeignKey');
+    }
+    const scanTargets = `${assocBlocks}\n${classBlocks}`;
+    const candidates = [
+        'ARRAY',
+        'BigInteger',
+        'Boolean',
+        'Computed',
+        'Date',
+        'DateTime',
+        'Enum',
+        'Float',
+        'ForeignKey',
+        'Index',
+        'Integer',
+        'JSON',
+        'LargeBinary',
+        'Numeric',
+        'PrimaryKeyConstraint',
+        'SmallInteger',
+        'String',
+        'Text',
+        'Time',
+        'UniqueConstraint',
+        'Unicode',
+        'UnicodeText',
+        'Interval',
+    ];
+    for (const sym of candidates) {
+        if (scanTargets.includes(`${sym}(`) || scanTargets.includes(`${sym}`)) {
+            usedCore.add(sym);
+        }
+    }
+    if (scanTargets.includes('func.')) usedCore.add('func');
+    if (scanTargets.includes('text(') || scanTargets.includes('text("'))
+        usedCore.add('text');
+
+    const coreList = Array.from(usedCore).sort();
 
     // Build dialect-specific import lines AFTER scanning columns (classBlocks)
     const importLines: string[] = [...baseImportLines];
+    if (coreList.length) {
+        // Format neatly across lines if many
+        const oneLine = coreList.join(', ');
+        if (oneLine.length <= 100) {
+            importLines.push(`from sqlalchemy import ${oneLine}`);
+        } else {
+            const chunks: string[] = [];
+            let current: string[] = [];
+            for (const s of coreList) {
+                const test = [...current, s].join(', ');
+                if (test.length > 90 && current.length) {
+                    chunks.push(`    ${current.join(', ')},`);
+                    current = [s];
+                } else {
+                    current.push(s);
+                }
+            }
+            if (current.length) chunks.push(`    ${current.join(', ')},`);
+            importLines.push('from sqlalchemy import (');
+            importLines.push(...chunks);
+            importLines.push(')');
+        }
+    }
     const pgSymbols = Array.from(dialectSymbols.postgres).sort();
     if (pgSymbols.length) {
         importLines.push(
@@ -823,7 +988,7 @@ export function exportSQLAlchemy(
         "    'pk': 'pk_%(table_name)s',",
         '}',
     ].join('\n');
-    const header = `${imports}\n\n\n${naming}\n\n\nclass Base(DeclarativeBase):\n    metadata = sa.MetaData(naming_convention=naming_convention)\n`;
+    const header = `${imports}\n\n\n${naming}\n\n\nclass Base(DeclarativeBase):\n    metadata = MetaData(naming_convention=naming_convention)\n`;
 
     const footer = '\n';
 
